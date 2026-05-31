@@ -1,0 +1,27 @@
+# --- dependencies / builds / env-secrets (auto-added) ---
+node_modules/
+.pnpm-store/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+dist/
+build/
+.next/
+out/
+.astro/
+.env
+.env.*
+*.env
+!.env.example
+api-key.txt
+zephyr-key.txt
+*-key.txt
+*.pem
+*.key
+*serviceAccount*.json
+credentials.json
+*.log
+.DS_Store
+Thumbs.db

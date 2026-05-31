@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlgoScope — Real CPU-Pinned Complexity Profiler</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:      #080c10;
+    --surf:    #0e1419;
+    --surf2:   #141c24;
+    --border:  #1e2a36;
+    --text:    #cdd6e0;
+    --muted:   #5a7080;
+    --accent:  #00e5ff;
+    --accent2: #7c3aed;
+    --glow:    rgba(0,229,255,0.15);
+    --ok:      #06d6a0;
+    --warn:    #ffd166;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.025) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none; z-index: 0;
+  }
+  .wrap { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 0 2rem 5rem; }
+
+  .truth {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    align-items: stretch;
+    margin-bottom: 1.75rem;
+    padding: 1.25rem 1.5rem;
+    border-radius: 14px;
+    border: 1px solid rgba(6,214,160,.35);
+    background: linear-gradient(135deg, rgba(6,214,160,.08), rgba(0,229,255,.04));
+  }
+  @media (max-width: 900px) { .truth { grid-template-columns: 1fr; } }
+  .truth h2 {
+    font-size: .72rem;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--ok);
+    margin-bottom: .5rem;
+    font-family: 'Space Mono', monospace;
+  }
+  .truth p { font-size: .95rem; line-height: 1.55; color: #b8d4dc; max-width: 52rem; }
+  .truth p strong { color: #fff; }
+  .truth-badges {
+    display: flex; flex-direction: column; gap: .5rem;
+    justify-content: center; min-width: 200px;
+  }
+  .truth-chip {
+    font-family: 'Space Mono', monospace;
+    font-size: .62rem;
+    padding: .45rem .75rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surf);
+    color: var(--text);
+  }
+  .truth-chip em { color: var(--accent); font-style: normal; }
+
+  header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 2.5rem 0 1.5rem; border-bottom: 1px solid var(--border);
+    margin-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem;
+  }
+  .logo-tag { font-family:'Space Mono',monospace; font-size:.6rem; letter-spacing:.2em; color:var(--accent); text-transform:uppercase; margin-bottom:.3rem; }
+  h1 { font-size:clamp(2rem,5vw,3.5rem); font-weight:800; letter-spacing:-.03em; color:#fff; }
+  h1 span { color:var(--accent); text-shadow:0 0 40px var(--glow); }
+  .pills { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  .pill {
+    font-family:'Space Mono',monospace; font-size:.62rem; padding:.32rem .85rem;
+    border-radius:999px; border:1px solid var(--border); background:var(--surf); color:var(--muted);
+  }
+  .pill.on { border-color:var(--accent); color:var(--accent); background:rgba(0,229,255,.06); }
+  .pill.cpp { border-color:#f7931a; color:#f7931a; background:rgba(247,147,26,.06); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); background: rgba(255,209,102,.06); }
+
+  .stats {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr));
+    gap:1px; background:var(--border); border:1px solid var(--border);
+    border-radius:12px; overflow:hidden; margin-bottom:2rem;
+  }
+  .stat { background:var(--surf); padding:1.4rem 1.5rem; transition:background .2s; }
+  .stat:hover { background:var(--surf2); }
+  .stat-lbl { font-family:'Space Mono',monospace; font-size:.6rem; letter-spacing:.15em; color:var(--muted); text-transform:uppercase; margin-bottom:.4rem; }
+  .stat-val { font-size:1.5rem; font-weight:700; color:#fff; letter-spacing:-.02em; }
+  .stat-sub { font-family:'Space Mono',monospace; font-size:.62rem; color:var(--muted); margin-top:.2rem; }
+
+  section { margin-bottom:3.5rem; }
+  .sec-lbl { font-family:'Space Mono',monospace; font-size:.58rem; letter-spacing:.25em; text-transform:uppercase; color:var(--accent); margin-bottom:.8rem; }
+
+  .panel {
+    background:var(--surf); border:1px solid var(--border); border-radius:16px;
+    padding:1.8rem; position:relative; overflow:hidden;
+    animation: fadeUp .45s ease both;
+  }
+  .panel::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:2px;
+    background:linear-gradient(90deg,var(--accent),var(--accent2),transparent);
+  }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+  .panel-hd { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1.5rem; flex-wrap:wrap; gap:.8rem; }
+  .panel-title { font-size:1rem; font-weight:700; color:#fff; letter-spacing:-.01em; }
+  .panel-desc { font-family:'Space Mono',monospace; font-size:.62rem; color:var(--muted); margin-top:.25rem; line-height:1.65; max-width:520px; }
+
+  .btns { display:flex; gap:.4rem; flex-wrap:wrap; }
+  .btn {
+    font-family:'Space Mono',monospace; font-size:.62rem; padding:.28rem .65rem;
+    border-radius:6px; border:1px solid var(--border); background:transparent;
+    color:var(--muted); cursor:pointer; transition:all .15s; letter-spacing:.04em;
+  }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+  .btn.on { background:var(--accent); color:#000; border-color:var(--accent); font-weight:700; }
+  .btn.danger:hover { border-color:#ef476f; color:#ef476f; }
+
+  .chart-box { position:relative; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+  @media(max-width:900px){ .two{grid-template-columns:1fr;} }
+
+  .tools-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+  @media (max-width: 900px) { .tools-grid { grid-template-columns: 1fr; } }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .75rem 1rem;
+    margin-top: 1rem;
+  }
+  @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+  .form-grid label {
+    font-family:'Space Mono',monospace;
+    font-size: .58rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: .35rem;
+  }
+  .form-grid input, .form-grid select, .form-grid textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: .72rem;
+    padding: .5rem .65rem;
+  }
+  .form-grid textarea { min-height: 72px; resize: vertical; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .tool-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; align-items: center; }
+  .file-line { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  input[type="file"] { display: none; }
+  .file-label {
+    font-family:'Space Mono',monospace;
+    font-size: .65rem;
+    padding: .45rem .9rem;
+    border-radius: 8px;
+    border: 1px dashed var(--accent);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .file-label:hover { background: rgba(0,229,255,.08); }
+
+  .insight {
+    background:rgba(0,229,255,.04); border:1px solid rgba(0,229,255,.15);
+    border-radius:10px; padding:1rem 1.4rem; margin-bottom:1.5rem;
+    font-family:'Space Mono',monospace; font-size:.7rem; line-height:1.7;
+    color:#a8cfd9;
+  }
+  .insight strong { color:var(--accent); }
+
+  table { width:100%; border-collapse:collapse; font-family:'Space Mono',monospace; font-size:.72rem; }
+  th { text-align:left; padding:.8rem 1rem; color:var(--muted); font-size:.58rem; letter-spacing:.15em; text-transform:uppercase; border-bottom:1px solid var(--border); }
+  td { padding:.75rem 1rem; border-bottom:1px solid rgba(255,255,255,.04); color:var(--text); }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:var(--surf2); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:8px; vertical-align:middle; }
+  .badge { display:inline-block; padding:.2rem .5rem; border-radius:6px; font-size:.6rem; font-weight:700; }
+  .bar-bg { width:110px; height:5px; background:var(--border); border-radius:3px; display:inline-block; vertical-align:middle; }
+  .bar-fg { height:100%; border-radius:3px; }
+
+  .msg { font-family:'Space Mono', monospace; font-size: .65rem; margin-top: .5rem; }
+  .msg.err { color: #ef476f; }
+  .msg.ok { color: var(--ok); }
+  .msg.warn { color: var(--warn); }
+  .run-log {
+    margin-top: .7rem;
+    background: #0a1016;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .75rem;
+    font-family: 'Space Mono', monospace;
+    font-size: .63rem;
+    line-height: 1.55;
+    color: #a8cfd9;
+    max-height: 210px;
+    overflow: auto;
+    white-space: pre-wrap;
+  }
+
+  footer { border-top:1px solid var(--border); padding-top:1.5rem; display:flex; justify-content:space-between; flex-wrap:wrap; gap:.8rem; }
+  footer p { font-family:'Space Mono',monospace; font-size:.62rem; color:var(--muted); max-width: 48rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="truth">
+    <div>
+      <h2>Real measurements — not a simulation</h2>
+      <p>
+        Every point on these charts is a <strong>measured wall-clock time</strong> (median of repeated trials in C++ with <strong>std::chrono</strong>).
+        The <strong>Big-O labels</strong> are the usual complexity <em>classes</em> for reference; they are <strong>not</strong> used to draw the curves — the curves come from actual runs.
+        The benchmark pins the process to <strong>one physical CPU core</strong> (<code>SetProcessAffinityMask</code> on Windows / <code>sched_setaffinity</code> on Linux) so the OS does not migrate the thread and distort cache timing.
+      </p>
+    </div>
+    <div class="truth-badges">
+      <div class="truth-chip" id="chip-core">⬤ <em>Physical core</em> — see meta</div>
+      <div class="truth-chip" id="chip-affinity">Affinity: <em>loaded from JSON</em></div>
+      <div class="truth-chip" id="chip-measure">Timing: <em>median · real clock</em></div>
+      <div class="truth-chip" id="chip-dataset">Dataset: <em>large</em></div>
+    </div>
+  </div>
+
+  <header>
+    <div>
+      <div class="logo-tag">// Classic algorithms + your measured series</div>
+      <h1>Algo<span>Scope</span></h1>
+    </div>
+    <div class="pills" id="pillRow"></div>
+  </header>
+
+  <section>
+    <div class="sec-lbl">00 — Data source &amp; your algorithms</div>
+    <div class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title">Built-in library + import / add your own</div>
+          <div class="panel-desc">
+            Default view: standard algorithms (search, sort, matrix multiply). To profile <strong>your own</strong> code with the same rigour (pinned core, fresh copies, median timing), add a function in
+            <code>algorithms.cpp</code>, register it in <code>getAlgorithms()</code>, run <code>./algoscope --out my.json</code>, then load that JSON here.
+            You can also paste measured <strong>n</strong> and <strong>ms</strong> pairs below to compare a curve on this dashboard (browser entry is for visualization — it is not a substitute for the C++ profiler).
+          </div>
+        </div>
+      </div>
+
+      <div class="tools-grid">
+        <div>
+          <label class="file-line">
+            <input type="file" id="fileJson" accept=".json,application/json">
+            <span class="file-label">Load benchmark_results.json</span>
+          </label>
+          <div class="tool-actions">
+            <button type="button" class="btn" id="btnReset">Reset to built-in demo</button>
+            <button type="button" class="btn danger" id="btnClearCustom">Remove browser-added series</button>
+          </div>
+          <p class="msg" id="loadMsg"></p>
+        </div>
+        <div>
+          <div class="panel-title">Run from dashboard (local bridge)</div>
+          <div class="panel-desc">
+            Start <code>dashboard_bridge.py</code> and open this page from <code>http://127.0.0.1:8765</code>.
+            Then you can build and run benchmarks directly from here.
+          </div>
+          <div class="form-grid">
+            <div>
+              <label for="runCore">Core</label>
+              <input type="number" id="runCore" value="0" min="0">
+            </div>
+            <div>
+              <label for="runTrials">Trials</label>
+              <input type="number" id="runTrials" value="3" min="1">
+            </div>
+            <div>
+              <label for="runInput">Input kind</label>
+              <select id="runInput">
+                <option>random</option>
+                <option>sorted</option>
+                <option>reverse</option>
+              </select>
+            </div>
+            <div>
+              <label for="runDataset">Dataset</label>
+              <select id="runDataset">
+                <option>small</option>
+                <option>standard</option>
+                <option selected>large</option>
+                <option>xlarge</option>
+              </select>
+            </div>
+          </div>
+          <div class="tool-actions">
+            <button type="button" class="btn" id="btnBuildLocal">Build (local)</button>
+            <button type="button" class="btn on" id="btnRunLocal">Run benchmark</button>
+            <button type="button" class="btn" id="btnReloadResult">Load latest result</button>
+          </div>
+          <p class="msg" id="runMsg"></p>
+          <div class="run-log" id="runLog">Bridge log will appear here.</div>
+        </div>
+        <div>
+          <div class="form-grid">
+            <div class="full">
+              <label for="custName">Algorithm name</label>
+              <input type="text" id="custName" placeholder="e.g. My DP Solver">
+            </div>
+            <div>
+              <label for="custCpx">Expected complexity (label)</label>
+              <select id="custCpx">
+                <option>O(1)</option>
+                <option>O(log n)</option>
+                <option>O(n)</option>
+                <option selected>O(n log n)</option>
+                <option>O(n^2)</option>
+                <option>O(n^3)</option>
+                <option>Unknown</option>
+              </select>
+            </div>
+            <div>
+              <label for="custCat">Category</label>
+              <input type="text" id="custCat" placeholder="Custom" value="Custom">
+            </div>
+            <div>
+              <label for="custColor">Color (#hex)</label>
+              <input type="text" id="custColor" value="#2ec4b6">
+            </div>
+            <div class="full">
+              <label for="custSizes">Sizes n (comma-separated)</label>
+              <textarea id="custSizes" placeholder="50, 100, 250, 500, 1000"></textarea>
+            </div>
+            <div class="full">
+              <label for="custTimes">Times in ms (same length as sizes)</label>
+              <textarea id="custTimes" placeholder="0.01, 0.02, 0.05, 0.12, 0.35"></textarea>
+            </div>
+          </div>
+          <div class="tool-actions">
+            <button type="button" class="btn on" id="btnAddCustom">Add measured series</button>
+          </div>
+          <p class="msg err" id="customMsg"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <div class="sec-lbl">Affinity Proof</div>
+    <div class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title">CPU pinning verification from run metadata</div>
+          <div class="panel-desc">Evidence is generated by the native benchmark process and exported in JSON. Use this block to prove the run is physically pinned.</div>
+        </div>
+      </div>
+      <div class="insight" id="proofBox"></div>
+    </div>
+  </section>
+
+  <div class="insight">
+    💡 <strong>Why one physical core?</strong>
+    The scheduler can move threads between cores; each hop can flush hot caches and add noise.
+    Pinning keeps the workload on <strong>one physical core</strong> so timings are comparable. Hyperthread siblings can still be masked depending on the implementation — check <code>pinned_logical_cpus</code> in the JSON meta when you run the CLI.
+  </div>
+
+  <section>
+    <div class="sec-lbl">01 — Overview</div>
+    <div class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title">All Algorithms — Time vs Input Size</div>
+          <div class="panel-desc">Measured runtimes (ms). Toggle Log scale to see very fast and slow algorithms together.</div>
+        </div>
+        <div class="btns">
+          <button class="btn on" id="btnOvLin">Linear</button>
+          <button class="btn" id="btnOvLog">Log</button>
+        </div>
+      </div>
+      <div class="chart-box" style="height:400px"><canvas id="cvOv"></canvas></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-lbl">02 — Complexity Class Groups</div>
+    <div class="two">
+      <div class="panel">
+        <div class="panel-hd">
+          <div>
+            <div class="panel-title">Slow  ·  O(n²) &amp; O(n³)</div>
+            <div class="panel-desc">Quadratic and cubic measured curves.</div>
+          </div>
+        </div>
+        <div class="chart-box" style="height:280px"><canvas id="cvSlow"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-hd">
+          <div>
+            <div class="panel-title">Fast  ·  O(1) → O(n log n)</div>
+            <div class="panel-desc">Lower growth classes — still measured, not assumed.</div>
+          </div>
+        </div>
+        <div class="chart-box" style="height:280px"><canvas id="cvFast"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-lbl">03 — Actual vs Theoretical Shape</div>
+    <div class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title">Normalised Curves — Shape Check</div>
+          <div class="panel-desc">Solid = measured (normalised). Dashed = theoretical Big-O shape for the <em>label</em> only — overlay is a sanity check, not the data source.</div>
+        </div>
+        <div class="btns" id="algoSel"></div>
+      </div>
+      <div class="chart-box" style="height:320px"><canvas id="cvOvl"></canvas></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-lbl">04 — Relative Slowdown at Max N</div>
+    <div class="panel">
+      <div class="panel-hd">
+        <div>
+          <div class="panel-title">Slowdown vs Fastest (each at its own largest n)</div>
+          <div class="panel-desc">Uses the last measured point per algorithm (largest n tested for that curve).</div>
+        </div>
+      </div>
+      <div class="chart-box" style="height:380px"><canvas id="cvHeat"></canvas></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-lbl">05 — Reference Table</div>
+    <div class="panel" style="padding:0;overflow:hidden">
+      <table id="tbl"></table>
+    </div>
+  </section>
+
+  <footer>
+    <p>AlgoScope · C++17 · <strong style="color:var(--accent)">CPU affinity + std::chrono</strong> · JSON for this UI</p>
+    <p id="footerMeta">Built-in demo data embedded in dashboard.html. Load output from <code>./algoscope</code> for your machine&apos;s real pinned run.</p>
+  </footer>
+</div>
+
+<script>
+// ══ Embedded demo (classic algorithms) — rich meta for the UI ═══════════════
+const DEMO_D = {"meta":{"trials":7,"input_kind":"random","timestamp":"2026-04-14 04:19:06","language":"C++17","compiler":"g++ 13","physical_core":0,"affinity_pinned":true,"pinned_logical_cpus":[0],"measurement_method":"median wall-clock ms per (algorithm, n); std::chrono::high_resolution_clock; fresh input copy each trial","theory_note":"Big-O labels classify algorithms; every plotted point is a measured time — not a formula.","affinity_api":"sched_setaffinity (Linux) — process pinned to one physical core for stable timings"},"algorithms":{"Constant Access":{"complexity":"O(1)","color":"#06d6a0","category":"Search","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000034,0.000034,0.000033,0.000034,0.000034,0.000039,0.000034,0.000034,0.000035,0.000036]},"Binary Search":{"complexity":"O(log n)","color":"#118ab2","category":"Search","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000259,0.000601,0.001429,0.004578,0.012609,0.01527,0.043754,0.067574,0.121162,0.216274]},"Linear Search":{"complexity":"O(n)","color":"#ffd166","category":"Search","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000056,0.000089,0.000118,0.000228,0.000338,0.000421,0.000561,0.000685,0.001033,0.001664]},"Prefix Sum":{"complexity":"O(n)","color":"#f4a261","category":"Array","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000052,0.000063,0.000109,0.000183,0.00026,0.000336,0.000487,0.000638,0.000947,0.00158]},"Merge Sort":{"complexity":"O(n log n)","color":"#7b2d8b","category":"Sorting","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.001345,0.003878,0.013957,0.026877,0.049582,0.07921,0.120607,0.185445,0.301347,0.508096]},"Heap Sort":{"complexity":"O(n log n)","color":"#9b5de5","category":"Sorting","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000917,0.001781,0.009421,0.02033,0.051934,0.069936,0.139597,0.199629,0.326894,0.460351]},"Insertion Sort":{"complexity":"O(n^2)","color":"#ef476f","category":"Sorting","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.000485,0.00157,0.011661,0.04594,0.082668,0.107597,0.251616,0.388551,1.051535,2.627657]},"Selection Sort":{"complexity":"O(n^2)","color":"#e63946","category":"Sorting","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.00101,0.004893,0.039189,0.095378,0.206461,0.335268,0.709379,1.307147,2.977345,6.116894]},"Bubble Sort":{"complexity":"O(n^2)","color":"#ff6b6b","category":"Sorting","sizes":[50,100,250,500,750,1000,1500,2000,3000,5000],"times_ms":[0.003736,0.016579,0.11617,0.471299,1.092797,2.142744,5.208986,8.965411,19.234939,59.135361]},"Matrix Multiply":{"complexity":"O(n^3)","color":"#ff4d4d","category":"Matrix","sizes":[10,20,30,40,50,60,70,80,90,100],"times_ms":[0.000511,0.000536,0.00068,0.000744,0.001114,0.000827,0.001258,0.001235,0.001428,0.001822]}}};
+
+let D = JSON.parse(JSON.stringify(DEMO_D));
+const BROWSER_TAG = ' (browser)';
+
+const charts = { ov: null, slow: null, fast: null, ovl: null, heat: null };
+const BRIDGE = {
+  base: window.location.origin,
+  pollTimer: null
+};
+
+const BASE = {
+  responsive:true, maintainAspectRatio:false,
+  interaction:{mode:'index',intersect:false},
+  plugins:{
+    legend:{labels:{color:'#8b949e',font:{family:'Space Mono',size:10},boxWidth:12,padding:14}},
+    tooltip:{
+      backgroundColor:'#0e1419',borderColor:'#1e2a36',borderWidth:1,
+      titleColor:'#cdd6e0',bodyColor:'#8b949e',
+      titleFont:{family:'Syne',weight:'700'},
+      bodyFont:{family:'Space Mono',size:10},
+      callbacks:{label:c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(5)} ms`}
+    }
+  },
+  scales:{
+    x:{type:'linear',ticks:{color:'#5a7080',font:{family:'Space Mono',size:9}},grid:{color:'#1a2230'},
+       title:{display:true,text:'Input Size (n)',color:'#5a7080',font:{family:'Syne',size:10}}},
+    y:{ticks:{color:'#5a7080',font:{family:'Space Mono',size:9}},grid:{color:'#1a2230'},
+       title:{display:true,text:'Time (ms)',color:'#5a7080',font:{family:'Syne',size:10}}}
+  }
+};
+
+function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
+
+function setRunMsg(text, kind=''){
+  const el = document.getElementById('runMsg');
+  el.textContent = text;
+  el.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+function setRunLog(lines){
+  const box = document.getElementById('runLog');
+  if(!Array.isArray(lines) || !lines.length){
+    box.textContent = 'No logs yet.';
+    return;
+  }
+  box.textContent = lines.join('\n');
+  box.scrollTop = box.scrollHeight;
+}
+
+function bridgeReady(){
+  return BRIDGE.base.startsWith('http://127.0.0.1:8765') || BRIDGE.base.startsWith('http://localhost:8765');
+}
+
+async function apiGet(path){
+  const r = await fetch(BRIDGE.base + path, { cache: 'no-store' });
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+async function apiPost(path, body){
+  const r = await fetch(BRIDGE.base + path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+async function refreshBridgeStatus(){
+  if(!bridgeReady()){ return; }
+  try{
+    const s = await apiGet('/api/status');
+    setRunLog(s.last_log_tail || []);
+    if(s.running){
+      setRunMsg('Benchmark running...', 'warn');
+    }else if(s.last_error){
+      setRunMsg(s.last_error, 'err');
+    }else if(s.last_exit_code === 0){
+      setRunMsg('Last command finished successfully.', 'ok');
+    }
+  }catch(err){
+    setRunMsg('Bridge not reachable: ' + err.message, 'err');
+    if(BRIDGE.pollTimer){ clearInterval(BRIDGE.pollTimer); BRIDGE.pollTimer = null; }
+  }
+}
+
+async function loadLatestResultFromBridge(){
+  const res = await apiGet('/api/results');
+  if(!res.ok || !res.data) throw new Error(res.error || 'No result payload');
+  D = res.data;
+  D.meta = D.meta || {};
+  D.meta._loadedFromFile = true;
+  renderAll();
+  document.getElementById('loadMsg').textContent = 'Loaded latest result from bridge.';
+  document.getElementById('loadMsg').className = 'msg ok';
+}
+
+function destroyAllCharts(){
+  Object.keys(charts).forEach(k=>{
+    if(charts[k]){ charts[k].destroy(); charts[k]=null; }
+  });
+}
+
+function parseNums(text){
+  return text.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean).map(s=>Number(s));
+}
+
+function timeNear(sizes, times, target){
+  if(!sizes||!sizes.length) return null;
+  let bi=0,bd=Math.abs(sizes[0]-target);
+  for(let i=1;i<sizes.length;i++){
+    const d=Math.abs(sizes[i]-target);
+    if(d<bd){bd=d;bi=i;}
+  }
+  return times[bi];
+}
+
+function mkDatasets(ns, algos){
+  return ns.map(n=>({
+    label:`${n} [${algos[n].complexity}]`,
+    data: algos[n].sizes.map((s,i)=>({x:s,y:algos[n].times_ms[i]})),
+    borderColor:algos[n].color, backgroundColor:algos[n].color+'22',
+    borderWidth:2,pointRadius:3,pointHoverRadius:6,tension:.3,parsing:false
+  }));
+}
+
+function theoryCurve(cpx,sizes){
+  if(cpx==='Unknown') return sizes.map(()=>0.5);
+  const n=sizes.map(x=>Math.max(x,1));
+  let raw;
+  switch(cpx){
+    case'O(1)':      raw=n.map(()=>1); break;
+    case'O(log n)':  raw=n.map(x=>Math.log2(x)); break;
+    case'O(n)':      raw=n.map(x=>x); break;
+    case'O(n log n)':raw=n.map(x=>x*Math.log2(x)); break;
+    case'O(n^2)':    raw=n.map(x=>x**2); break;
+    case'O(n^3)':    raw=n.map(x=>x**3); break;
+    default:          raw=n.map(x=>x);
+  }
+  const mn=Math.min(...raw),mx=Math.max(...raw),rng=mx-mn||1;
+  return raw.map(v=>(v-mn)/rng);
+}
+function norm(arr){const mn=Math.min(...arr),mx=Math.max(...arr),rng=mx-mn||1;return arr.map(v=>(v-mn)/rng);}
+
+function ovlDatasets(name, algos){
+  const m=algos[name],t=norm(m.times_ms),th=theoryCurve(m.complexity,m.sizes);
+  return [
+    {label:'Measured (normalised)',data:m.sizes.map((s,i)=>({x:s,y:t[i]})),borderColor:m.color,backgroundColor:m.color+'28',borderWidth:2.5,pointRadius:5,tension:.3,parsing:false},
+    {label:`Theory shape ${m.complexity}`,data:m.sizes.map((s,i)=>({x:s,y:th[i]})),borderColor:'#ffffff',backgroundColor:'transparent',borderWidth:1.5,borderDash:[6,4],pointRadius:0,tension:.3,parsing:false},
+  ];
+}
+
+function updateTruthChips(meta){
+  const core = meta.physical_core != null ? meta.physical_core : '—';
+  document.getElementById('chip-core').innerHTML = '⬤ <em>One physical core</em> · #' + core;
+  let aff = '—';
+  if(meta.affinity_pinned === true) aff = 'Pinned (see JSON meta)';
+  else if(meta.affinity_pinned === false) aff = 'Not pinned / unknown';
+  document.getElementById('chip-affinity').innerHTML = 'Affinity: <em>' + aff + '</em>';
+  let mm = meta.measurement_method || meta.measurement || 'Median wall-clock ms (std::chrono)';
+  if (mm.length > 88) mm = mm.slice(0, 85) + '…';
+  document.getElementById('chip-measure').innerHTML = 'Timing: <em>' + mm.replace(/</g,'') + '</em>';
+  const ds = meta.dataset_profile || 'unknown';
+  document.getElementById('chip-dataset').innerHTML = 'Dataset: <em>' + ds + '</em>';
+}
+
+function renderProof(meta){
+  const pinned = meta.affinity_pinned === true;
+  const logical = Array.isArray(meta.pinned_logical_cpus) ? meta.pinned_logical_cpus : [];
+  const lines = [];
+  lines.push(`<strong>Pin status:</strong> ${pinned ? 'PINNED' : 'NOT PINNED / UNKNOWN'}`);
+  lines.push(`<strong>Requested physical core:</strong> ${meta.physical_core != null ? meta.physical_core : '—'}`);
+  lines.push(`<strong>Detected cores:</strong> physical=${meta.detected_physical_cores ?? '—'}, logical=${meta.detected_logical_cores ?? '—'}`);
+  lines.push(`<strong>Pinned logical CPUs:</strong> ${logical.length ? logical.join(', ') : '—'}`);
+  lines.push(`<strong>Affinity API:</strong> ${meta.affinity_api || '—'}`);
+  if (meta.affinity_evidence) lines.push(`<strong>Evidence:</strong> ${String(meta.affinity_evidence).replace(/</g,'')}`);
+  if (meta.affinity_error) lines.push(`<strong>Affinity error:</strong> ${String(meta.affinity_error).replace(/</g,'')}`);
+  lines.push(`<strong>Dataset profile:</strong> ${meta.dataset_profile || 'unknown'}`);
+  lines.push(`<strong>Total measured points:</strong> ${meta.total_points != null ? meta.total_points : '—'}`);
+  lines.push(`<strong>Run duration:</strong> ${meta.run_duration_sec != null ? Number(meta.run_duration_sec).toFixed(2) + ' s' : '—'}`);
+  document.getElementById('proofBox').innerHTML = lines.join('<br>');
+}
+
+function renderPills(meta, algos){
+  const names = Object.keys(algos);
+  const custom = names.filter(n=>algos[n]._browserAdded);
+  const el = document.getElementById('pillRow');
+  const rows = [
+    `<span class="pill on">⬤ Core ${meta.physical_core != null ? meta.physical_core : 0}</span>`,
+    `<span class="pill cpp">${meta.language || 'C++17'} · ${meta.compiler || 'profiler'}</span>`,
+    `<span class="pill">${meta.trials != null ? meta.trials : '—'} trials / point</span>`,
+    `<span class="pill">${names.length} algorithms</span>`,
+    `<span class="pill">Median timing</span>`,
+    `<span class="pill">${meta.timestamp || '—'}</span>`,
+  ];
+  if(custom.length) rows.push(`<span class="pill warn">${custom.length} added in browser</span>`);
+  el.innerHTML = rows.join('');
+}
+
+function renderFooter(meta, algos){
+  const names = Object.keys(algos);
+  const custom = names.filter(n=>algos[n]._browserAdded);
+  let t = 'Data: ';
+  if(meta._loadedFromFile) t += 'loaded from JSON file.';
+  else t += 'embedded demo snapshot.';
+  if(custom.length) t += ' Includes ' + custom.length + ' series entered in this page (for plotting only — run the C++ tool for pinned measurements).';
+  document.getElementById('footerMeta').textContent = t;
+}
+
+function renderStats(names, algos, meta){
+  const maxTs = names.map(n=>algos[n].times_ms.at(-1));
+  const fastest = names[maxTs.indexOf(Math.min(...maxTs))];
+  const slowest = names[maxTs.indexOf(Math.max(...maxTs))];
+  const slowdown = (Math.max(...maxTs)/Math.min(...maxTs)).toFixed(0);
+  const sEl = document.getElementById('stats');
+  sEl.innerHTML = '';
+  [
+    {l:'Algorithms', v:names.length, s:'in view'},
+    {l:'Physical core', v:'#' + (meta.physical_core != null ? meta.physical_core : '—'), s: meta.affinity_pinned ? 'affinity in JSON' : 'check run'},
+    {l:'Trials / n', v:meta.trials != null ? meta.trials : '—', s:'median kept'},
+    {l:'Dataset', v:meta.dataset_profile || '—', s:(meta.total_points != null ? meta.total_points + ' measured points' : 'profile not specified')},
+    {l:'Run time', v:(meta.run_duration_sec != null ? Number(meta.run_duration_sec).toFixed(1)+'s' : '—'), s:'native benchmark duration'},
+    {l:'Fastest @ max n', v:fastest.split(' ')[0], s:algos[fastest].complexity},
+    {l:'Slowest @ max n', v:slowest.split(' ')[0], s:algos[slowest].complexity},
+    {l:'Spread', v:slowdown+'×', s:'max n slowdown'},
+  ].forEach(s=>{
+    sEl.innerHTML += `<div class="stat"><div class="stat-lbl">${s.l}</div><div class="stat-val">${s.v}</div><div class="stat-sub">${s.s}</div></div>`;
+  });
+}
+
+function renderTable(names, algos){
+  const maxT2 = Math.max(...names.map(n=>algos[n].times_ms.at(-1)));
+  const cls={'O(1)':'#06d6a0','O(log n)':'#118ab2','O(n)':'#ffd166','O(n log n)':'#9b5de5','O(n^2)':'#ef476f','O(n^3)':'#ff4d4d','Unknown':'#888'};
+  const tbl = document.getElementById('tbl');
+  tbl.innerHTML = `<thead><tr><th>Algorithm</th><th>Complexity</th><th>Category</th><th>Near n=50</th><th>Near n=1000</th><th>Near n=5000</th><th>Relative @ max n</th></tr></thead>`;
+  const tbody = document.createElement('tbody');
+  [...names].sort((a,b)=>algos[a].times_ms.at(-1)-algos[b].times_ms.at(-1)).forEach(n=>{
+    const m=algos[n], c=cls[m.complexity]||'#aaa';
+    const t50 = timeNear(m.sizes, m.times_ms, 50);
+    const t1k = timeNear(m.sizes, m.times_ms, 1000);
+    const t5k = timeNear(m.sizes, m.times_ms, 5000);
+    const tN = m.times_ms.at(-1);
+    const rel = tN/maxT2;
+    const tag = m._browserAdded ? ' <span class="badge" style="background:#ffd16620;color:#ffd166;border:1px solid #ffd16650">browser</span>' : '';
+    tbody.innerHTML += `<tr>
+      <td><span class="dot" style="background:${m.color}"></span>${n}${tag}</td>
+      <td><span class="badge" style="background:${c}20;color:${c};border:1px solid ${c}40">${m.complexity}</span></td>
+      <td style="color:var(--muted)">${m.category||'—'}</td>
+      <td>${t50!=null?t50.toFixed(5)+' ms':'—'}</td>
+      <td>${t1k!=null?t1k.toFixed(5)+' ms':'—'}</td>
+      <td>${t5k!=null?t5k.toFixed(4)+' ms':'—'}</td>
+      <td><span class="bar-bg"><span class="bar-fg" style="width:${Math.max(rel*100,.5)}%;background:${m.color}"></span></span></td>
+    </tr>`;
+  });
+  tbl.appendChild(tbody);
+}
+
+function renderAll(){
+  destroyAllCharts();
+  const meta = D.meta || {};
+  const algos = D.algorithms;
+  const names = Object.keys(algos);
+  if(!names.length){ alert('No algorithms in dataset.'); return; }
+
+  updateTruthChips(meta);
+  renderPills(meta, algos);
+  renderFooter(meta, algos);
+  renderStats(names, algos, meta);
+  renderProof(meta);
+
+  const ovCfg = deepClone(BASE);
+  charts.ov = new Chart(document.getElementById('cvOv'),{type:'line',data:{datasets:mkDatasets(names, algos)},options:ovCfg});
+  document.getElementById('btnOvLin').classList.add('on');
+  document.getElementById('btnOvLog').classList.remove('on');
+
+  const slowNm = names.filter(n=>['O(n^2)','O(n^3)'].includes(algos[n].complexity));
+  const fastNm = names.filter(n=>!['O(n^2)','O(n^3)'].includes(algos[n].complexity));
+  charts.slow = new Chart(document.getElementById('cvSlow'),{type:'line',data:{datasets:mkDatasets(slowNm.length?slowNm:names, algos)},options:deepClone(BASE)});
+  charts.fast = new Chart(document.getElementById('cvFast'),{type:'line',data:{datasets:mkDatasets(fastNm.length?fastNm:names, algos)},options:deepClone(BASE)});
+
+  const sel = document.getElementById('algoSel');
+  sel.innerHTML = '';
+  let activeN = names.find(n=>!['O(n^2)','O(n^3)'].includes(algos[n].complexity)) || names[0];
+  names.forEach(name=>{
+    const b=document.createElement('button');
+    b.className='btn'+(name===activeN?' on':'');
+    b.textContent=name.split(' ')[0].slice(0,12)+(name.length>14?'…':''); b.title=`${name} · ${algos[name].complexity}`;
+    b.onclick=()=>{
+      sel.querySelectorAll('.btn').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+      activeN=name;
+      charts.ovl.data.datasets=ovlDatasets(name, algos);
+      charts.ovl.update();
+    };
+    sel.appendChild(b);
+  });
+  const ovlCfg=deepClone(BASE);
+  ovlCfg.plugins.tooltip.callbacks.label=c=>` ${c.dataset.label}: ${c.parsed.y.toFixed(3)}`;
+  ovlCfg.scales.y.title.text='Normalised (0–1)';
+  charts.ovl=new Chart(document.getElementById('cvOvl'),{type:'line',data:{datasets:ovlDatasets(activeN, algos)},options:ovlCfg});
+
+  const maxTs = names.map(n=>algos[n].times_ms.at(-1));
+  const minT=Math.min(...maxTs);
+  const fastest = names[maxTs.indexOf(minT)];
+  const slowdowns=maxTs.map(t=>t/minT);
+  const logSl=slowdowns.map(s=>Math.max(Math.log10(s),.001));
+  const sIdx=[...Array(names.length).keys()].sort((a,b)=>logSl[a]-logSl[b]);
+  const hCfg=deepClone(BASE);
+  hCfg.indexAxis='y';
+  hCfg.plugins.legend.display=false;
+  hCfg.plugins.tooltip.callbacks={
+    title:items=>names[sIdx[items[0].dataIndex]],
+    label:c=>` ×${slowdowns[sIdx[c.dataIndex]].toFixed(1)} slower than ${fastest}`
+  };
+  hCfg.scales.x.title.text='log₁₀(Slowdown vs fastest)';
+  hCfg.scales.x.ticks.callback=v=>`10^${v.toFixed(1)}`;
+  charts.heat=new Chart(document.getElementById('cvHeat'),{
+    type:'bar',
+    data:{
+      labels:sIdx.map(i=>names[i]),
+      datasets:[{
+        data:sIdx.map(i=>logSl[i]),
+        backgroundColor:sIdx.map(i=>algos[names[i]].color+'bb'),
+        borderColor:sIdx.map(i=>algos[names[i]].color),
+        borderWidth:1.5, borderRadius:4,
+      }]
+    },
+    options:hCfg
+  });
+
+  renderTable(names, algos);
+
+  document.getElementById('btnOvLin').onclick=(e)=>{
+    document.getElementById('btnOvLin').classList.add('on');
+    document.getElementById('btnOvLog').classList.remove('on');
+    charts.ov.options.scales.y.type='linear';
+    charts.ov.update();
+  };
+  document.getElementById('btnOvLog').onclick=(e)=>{
+    document.getElementById('btnOvLog').classList.add('on');
+    document.getElementById('btnOvLin').classList.remove('on');
+    charts.ov.options.scales.y.type='logarithmic';
+    charts.ov.update();
+  };
+}
+
+document.getElementById('fileJson').addEventListener('change', ev=>{
+  const f = ev.target.files && ev.target.files[0];
+  const msg = document.getElementById('loadMsg');
+  msg.textContent='';
+  msg.className='msg';
+  if(!f){ return; }
+  const r = new FileReader();
+  r.onload=()=>{
+    try{
+      const parsed = JSON.parse(r.result);
+      if(!parsed.algorithms || typeof parsed.algorithms!=='object') throw new Error('Invalid JSON: need algorithms{}');
+      D = parsed;
+      D.meta = D.meta || {};
+      D.meta._loadedFromFile = true;
+      renderAll();
+      msg.textContent = 'Loaded: ' + f.name;
+      msg.className='msg ok';
+    }catch(e){
+      msg.textContent = String(e.message || e);
+      msg.className='msg err';
+    }
+  };
+  r.readAsText(f);
+  ev.target.value='';
+});
+
+document.getElementById('btnReset').onclick=()=>{
+  D = JSON.parse(JSON.stringify(DEMO_D));
+  document.getElementById('loadMsg').textContent='Reset to built-in demo.';
+  document.getElementById('loadMsg').className='msg ok';
+  renderAll();
+};
+
+document.getElementById('btnClearCustom').onclick=()=>{
+  const algos = D.algorithms;
+  Object.keys(algos).forEach(k=>{
+    if(algos[k]._browserAdded) delete algos[k];
+  });
+  renderAll();
+};
+
+document.getElementById('btnAddCustom').onclick=()=>{
+  const msg = document.getElementById('customMsg');
+  msg.textContent='';
+  const name = document.getElementById('custName').value.trim();
+  const sizes = parseNums(document.getElementById('custSizes').value);
+  const times = parseNums(document.getElementById('custTimes').value);
+  if(!name){ msg.textContent='Enter a name.'; return; }
+  if(sizes.length<2){ msg.textContent='Need at least two sizes.'; return; }
+  if(sizes.length!==times.length){ msg.textContent='Sizes and times must have the same length.'; return; }
+  if(sizes.some(x=>!Number.isFinite(x)) || times.some(x=>!Number.isFinite(x))){ msg.textContent='All sizes and times must be finite numbers.'; return; }
+  let color = document.getElementById('custColor').value.trim();
+  if(!/^#[0-9a-fA-F]{6}$/.test(color)){ msg.textContent='Color must be #RRGGBB'; return; }
+  const entry = {
+    complexity: document.getElementById('custCpx').value,
+    color,
+    category: document.getElementById('custCat').value.trim() || 'Custom',
+    sizes,
+    times_ms: times,
+    _browserAdded: true
+  };
+  const key = name.includes(BROWSER_TAG) ? name : name + BROWSER_TAG;
+  D.algorithms[key] = entry;
+  msg.textContent='Added: ' + key;
+  renderAll();
+};
+
+document.getElementById('btnBuildLocal').onclick = async ()=>{
+  if(!bridgeReady()){
+    setRunMsg('Open dashboard via http://127.0.0.1:8765 (bridge mode).', 'warn');
+    return;
+  }
+  try{
+    setRunMsg('Building...', 'warn');
+    const r = await apiPost('/api/build', {});
+    setRunLog(r.output_tail || []);
+    setRunMsg('Build completed.', 'ok');
+  }catch(err){
+    setRunMsg('Build failed: ' + err.message, 'err');
+  }
+};
+
+document.getElementById('btnRunLocal').onclick = async ()=>{
+  if(!bridgeReady()){
+    setRunMsg('Open dashboard via http://127.0.0.1:8765 (bridge mode).', 'warn');
+    return;
+  }
+  const payload = {
+    core: Number(document.getElementById('runCore').value || 0),
+    trials: Number(document.getElementById('runTrials').value || 3),
+    input_kind: document.getElementById('runInput').value,
+    dataset: document.getElementById('runDataset').value,
+    out: 'benchmark_results.json'
+  };
+  try{
+    await apiPost('/api/run', payload);
+    setRunMsg('Benchmark started. Streaming live logs...', 'warn');
+    if(!BRIDGE.pollTimer){
+      BRIDGE.pollTimer = setInterval(refreshBridgeStatus, 1200);
+    }
+    await refreshBridgeStatus();
+  }catch(err){
+    setRunMsg('Run failed to start: ' + err.message, 'err');
+  }
+};
+
+document.getElementById('btnReloadResult').onclick = async ()=>{
+  if(!bridgeReady()){
+    setRunMsg('Open dashboard via http://127.0.0.1:8765 (bridge mode).', 'warn');
+    return;
+  }
+  try{
+    await loadLatestResultFromBridge();
+    setRunMsg('Loaded latest benchmark_results.json', 'ok');
+  }catch(err){
+    setRunMsg('Could not load latest result: ' + err.message, 'err');
+  }
+};
+
+if(bridgeReady()){
+  setRunMsg('Bridge mode detected. You can control build/run here.', 'ok');
+  refreshBridgeStatus();
+  BRIDGE.pollTimer = setInterval(refreshBridgeStatus, 1200);
+}else{
+  setRunMsg('Bridge mode inactive. Start dashboard_bridge.py and open http://127.0.0.1:8765', 'warn');
+}
+
+renderAll();
+</script>
+</body>
+</html>
